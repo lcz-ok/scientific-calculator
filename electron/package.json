@@ -1,0 +1,27 @@
+{
+  "name": "scientific-calculator",
+  "version": "1.0.0",
+  "description": "科学计算器",
+  "main": "main.js",
+  "scripts": {
+    "build": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.calculator.app",
+    "productName": "ScientificCalculator",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "web/**/*"
+    ],
+    "win": {
+      "target": "portable"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3"
+  }
+}

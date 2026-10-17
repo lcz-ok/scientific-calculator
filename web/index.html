@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>科学计算器</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #e8eaed;
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    user-select: none;
+    overflow: hidden;
+  }
+  .calc {
+    width: 100%;
+    max-width: 520px;
+    display: flex;
+    flex-direction: column;
+    background: #e8eaed;
+    padding: 8px 10px 12px;
+  }
+  .display-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 10px 6px 14px;
+    min-height: 130px;
+    position: relative;
+  }
+  .mode-indicator {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    font-size: 15px;
+    color: #5f6368;
+    font-weight: 500;
+  }
+  .expression {
+    text-align: right;
+    color: #5f6368;
+    font-size: 18px;
+    min-height: 24px;
+    word-break: break-all;
+    line-height: 1.3;
+    padding: 0 4px;
+    font-family: "Roboto Mono", Consolas, monospace;
+  }
+  .result {
+    text-align: right;
+    color: #202124;
+    font-size: 40px;
+    font-weight: 500;
+    word-break: break-all;
+    line-height: 1.2;
+    padding: 4px 4px 0;
+    font-family: "Roboto Mono", Consolas, monospace;
+    min-height: 52px;
+  }
+  .keypad {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 8px;
+  }
+  .btn {
+    border: none;
+    border-radius: 14px;
+    background: #ffffff;
+    color: #202124;
+    font-size: 19px;
+    font-weight: 500;
+    height: 52px;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+    transition: background 0.1s, transform 0.05s;
+    font-family: inherit;
+  }
+  .btn:active { background: #e0e3e7; transform: scale(0.97); }
+  .btn.op { color: #1a73e8; }
+  .btn.func { color: #5f6368; font-size: 17px; }
+  .btn.mem { color: #5f6368; font-size: 16px; }
+  .btn.equals {
+    background: #1a73e8;
+    color: #fff;
+    grid-row: span 2;
+    height: auto;
+    font-size: 24px;
+    border-radius: 16px;
+  }
+  .btn.equals:active { background: #1557b0; }
+  .btn.active { background: #d2e3fc; color: #1a73e8; }
+  .btn sup { font-size: 12px; }
+  .btn sub { font-size: 11px; }
+  @media (max-width: 380px) {
+    .btn { font-size: 16px; height: 48px; }
+    .btn.func { font-size: 14px; }
+    .result { font-size: 32px; }
+  }
+</style>
+</head>
+<body>
+<div class="calc">
+  <div class="display-wrap">
+    <div class="mode-indicator" id="modeIndicator">Deg</div>
+    <div class="expression" id="expression"></div>
+    <div class="result" id="result">0</div>
+  </div>
+  <div class="keypad" id="keypad"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
