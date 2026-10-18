@@ -84,6 +84,15 @@ function isStartOfExpr() {
     (lastToken().type === 'op' && lastToken().value !== 'fact');
 }
 
+// 按 = 显示结果后继续运算：把表达式折叠为上一次结果，作为新表达式起点
+// （任何按键都只显示表达式，必须再按 = 才显示新答案）
+function continueFromResult() {
+  if (state.justEvaluated) {
+    state.tokens = [{ type: 'num', value: formatNumber(state.result) }];
+    state.justEvaluated = false;
+  }
+}
+
 // ---------- 数字输入 ----------
 function inputDigit(d) {
   if (state.error) clearAll();
@@ -128,7 +137,7 @@ function inputDot() {
 // ---------- 运算符 ----------
 function inputOp(op) {
   if (state.error) return;
-  state.justEvaluated = false;
+  continueFromResult();
   const lt = lastToken();
   // 负号处理
   if (op === '-' && (state.tokens.length === 0 || (lt && (lt.type === 'lparen' || lt.type === 'op')))) {
@@ -153,7 +162,15 @@ function inputOp(op) {
 
 function inputParen(p) {
   if (state.error) clearAll();
-  state.justEvaluated = false;
+  if (state.justEvaluated) {
+    if (p === '(') {
+      // 结果显示后按 ( ：开始全新表达式
+      state.tokens = [];
+      state.justEvaluated = false;
+    } else {
+      return; // 结果显示后按 ) ：无括号可闭合
+    }
+  }
   if (p === '(') {
     const lt = lastToken();
     if (lt && (lt.type === 'num' || lt.type === 'rparen' || lt.type === 'fact' || lt.type === 'pct' || lt.type === 'const')) {
@@ -207,6 +224,8 @@ function inputFunc(f) {
 // ---------- 后置运算: x², x³, x!, %, 1/x ----------
 function appendPostfix(op) {
   if (state.error) return;
+  // 结果显示后按 x²/x³/x!/%：折叠为结果再应用，且必须再按 = 才出答案
+  continueFromResult();
   const lt = lastToken();
   if (!lt) return;
   if (lt.type === 'num' && lt.value === '-') return;
@@ -229,6 +248,8 @@ function appendPostfix(op) {
 // 1/x: 将最后一个操作数包裹为 (1÷x)
 function inputReciprocal() {
   if (state.error) return;
+  // 结果显示后按 1/x：折叠为结果再取倒数，且必须再按 = 才出答案
+  continueFromResult();
   const span = findLastOperandSpan();
   if (!span) return;
   const operand = state.tokens.slice(span.start, span.end + 1);
@@ -299,7 +320,7 @@ function findOperandEndingAt(idx) {
 // ---------- x^y / y√x ----------
 function inputPower() {
   if (state.error) return;
-  state.justEvaluated = false;
+  continueFromResult();
   const lt = lastToken();
   if (!lt || lt.type === 'op' || (lt.type === 'num' && lt.value === '-')) {
     if (state.result) {
@@ -312,7 +333,7 @@ function inputPower() {
 
 function inputNthRoot() {
   if (state.error) return;
-  state.justEvaluated = false;
+  continueFromResult();
   const lt = lastToken();
   if (!lt || lt.type === 'op' || (lt.type === 'num' && lt.value === '-')) {
     if (state.result) {
@@ -392,8 +413,10 @@ function toggleInv() {
 function evaluateNow() {
   if (state.tokens.length === 0) return;
   try {
-    // 自动补全未闭合的括号
+    // 去掉末尾多余的运算符，并自动补全未闭合的括号
     const tokens = [...state.tokens];
+    while (tokens.length && tokens[tokens.length - 1].type === 'op') tokens.pop();
+    if (tokens.length === 0) return;
     let depth = 0;
     for (const t of tokens) {
       if (t.type === 'lparen') depth++;
@@ -658,8 +681,25 @@ function updateToggleButtons() {
 const _origRender = render;
 render = function() { _origRender(); updateToggleButtons(); };
 
+// ===== 关于弹窗 =====
+const aboutOverlay = $('aboutOverlay');
+const aboutBtn = $('aboutBtn');
+const aboutCloseBtn = $('aboutClose');
+
+function openAbout() { aboutOverlay.hidden = false; }
+function closeAbout() { aboutOverlay.hidden = true; aboutCloseBtn.blur(); }
+
+aboutBtn.addEventListener('click', () => { openAbout(); aboutBtn.blur(); });
+aboutCloseBtn.addEventListener('click', closeAbout);
+aboutOverlay.addEventListener('click', (e) => { if (e.target === aboutOverlay) closeAbout(); });
+
 // 键盘支持（电脑端可直接用键盘操作所有按键）
 document.addEventListener('keydown', (e) => {
+  // 弹窗打开时，Enter / Esc 关闭弹窗，其余按键不处理
+  if (!aboutOverlay.hidden) {
+    if (e.key === 'Escape' || e.key === 'Enter') { closeAbout(); e.preventDefault(); }
+    return;
+  }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key;
   let handled = true;

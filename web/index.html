@@ -41,6 +41,23 @@
     color: #5f6368;
     font-weight: 500;
   }
+  .about-btn {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    border: none;
+    background: transparent;
+    color: #5f6368;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 5px 10px;
+    border-radius: 12px;
+    font-family: inherit;
+    transition: background 0.1s;
+  }
+  .about-btn:hover { background: rgba(0,0,0,0.06); }
+  .about-btn:active { background: rgba(0,0,0,0.1); }
   .expression {
     text-align: right;
     color: #5f6368;
@@ -101,16 +118,94 @@
     .btn.func { font-size: 14px; }
     .result { font-size: 32px; }
   }
+  /* 关于弹窗 */
+  .about-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(32,33,36,0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 24px;
+  }
+  .about-overlay[hidden] { display: none; }
+  .about-card {
+    background: #ffffff;
+    border-radius: 22px;
+    padding: 26px 24px 20px;
+    max-width: 320px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 10px 36px rgba(0,0,0,0.3);
+  }
+  .about-icon {
+    width: 76px;
+    height: 76px;
+    margin: 0 auto 14px;
+    border-radius: 20px;
+    background: #ffffff;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    padding: 7px;
+    gap: 4px;
+  }
+  .about-icon span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 21px;
+    font-weight: 600;
+    color: #202124;
+    border-radius: 10px;
+    font-family: "Roboto Mono", Consolas, monospace;
+  }
+  .about-icon span.eq { background: #1a73e8; color: #fff; }
+  .about-title { font-size: 20px; font-weight: 600; color: #202124; }
+  .about-sub { font-size: 13px; color: #5f6368; margin-top: 2px; }
+  .about-divider { height: 1px; background: #e8eaed; margin: 16px 12px; }
+  .about-author { font-size: 18px; font-weight: 600; color: #1a73e8; }
+  .about-author-en { font-size: 15px; color: #5f6368; margin-top: 4px; }
+  .about-close {
+    margin-top: 18px;
+    border: none;
+    background: #1a73e8;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 500;
+    padding: 10px 32px;
+    border-radius: 18px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.1s;
+  }
+  .about-close:active { background: #1557b0; }
 </style>
 </head>
 <body>
 <div class="calc">
   <div class="display-wrap">
     <div class="mode-indicator" id="modeIndicator">Deg</div>
+    <button class="about-btn" id="aboutBtn">ⓘ 关于</button>
     <div class="expression" id="expression"></div>
     <div class="result" id="result">0</div>
   </div>
   <div class="keypad" id="keypad"></div>
+</div>
+
+<!-- 关于弹窗 -->
+<div class="about-overlay" id="aboutOverlay" hidden>
+  <div class="about-card">
+    <div class="about-icon"><span>+</span><span>−</span><span>×</span><span class="eq">=</span></div>
+    <div class="about-title">科学计算器</div>
+    <div class="about-sub">Scientific Calculator · v3.0</div>
+    <div class="about-divider"></div>
+    <div class="about-author">刘宸至一首创作！</div>
+    <div class="about-author-en">A creation by Liu Chenzhi!</div>
+    <button class="about-close" id="aboutClose">关闭 · Close</button>
+  </div>
 </div>
 <script src="app.js"></script>
 </body>
