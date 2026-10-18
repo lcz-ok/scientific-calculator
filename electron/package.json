@@ -1,6 +1,6 @@
 {
   "name": "scientific-calculator",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "科学计算器",
   "main": "main.js",
   "scripts": {
@@ -17,7 +17,11 @@
       "web/**/*"
     ],
     "win": {
-      "target": "portable"
+      "target": "portable",
+      "icon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "ScientificCalculator-${version}-windows.${ext}"
     }
   },
   "devDependencies": {

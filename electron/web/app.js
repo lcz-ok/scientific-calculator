@@ -22,11 +22,18 @@ const modeIndicator = $('modeIndicator');
 
 // ---------- 渲染 ----------
 function render() {
-  expressionEl.textContent = tokensToString(state.tokens);
+  const text = tokensToString(state.tokens);
   if (state.error) {
+    expressionEl.textContent = text;
     resultEl.textContent = '错误';
-  } else {
+  } else if (state.justEvaluated) {
+    // 已按 =：上方显示完整表达式，下方显示结果
+    expressionEl.textContent = text;
     resultEl.textContent = formatNumber(state.result);
+  } else {
+    // 输入过程中只显示正在输入的内容，不提前显示计算结果
+    expressionEl.textContent = '';
+    resultEl.textContent = text || '0';
   }
   modeIndicator.textContent = state.angleMode + (state.inv ? ' · Inv' : '');
 }
@@ -633,7 +640,8 @@ buttons.forEach(b => {
   else if (b.l === 'ʸ√x') btn.innerHTML = '<sup>y</sup>√x';
   else if (b.l === '1/x') btn.innerHTML = '1/x';
   else btn.textContent = b.l;
-  btn.addEventListener('click', b.a);
+  btn.tabIndex = -1;
+  btn.addEventListener('click', () => { b.a(); btn.blur(); });
   keypad.appendChild(btn);
 });
 
@@ -650,23 +658,29 @@ function updateToggleButtons() {
 const _origRender = render;
 render = function() { _origRender(); updateToggleButtons(); };
 
-// 键盘支持
+// 键盘支持（电脑端可直接用键盘操作所有按键）
 document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key;
-  if (/[0-9]/.test(k)) inputDigit(k);
+  let handled = true;
+  if (k >= '0' && k <= '9') inputDigit(k);
   else if (k === '.') inputDot();
   else if (k === '+') inputOp('+');
   else if (k === '-') inputOp('-');
   else if (k === '*') inputOp('*');
-  else if (k === '/') { e.preventDefault(); inputOp('/'); }
+  else if (k === '/') inputOp('/');
   else if (k === '(') inputParen('(');
   else if (k === ')') inputParen(')');
   else if (k === '^') inputPower();
   else if (k === '%') appendPostfix('pct');
-  else if (k === '!' ) appendPostfix('fact');
-  else if (k === 'Enter' || k === '=') { e.preventDefault(); evaluateNow(); }
+  else if (k === '!') appendPostfix('fact');
+  else if (k === 'Enter' || k === '=') evaluateNow();
   else if (k === 'Backspace') backspace();
-  else if (k === 'Escape') clearAll();
+  else if (k === 'Escape' || k === 'Delete') clearAll();
+  else if (k === 'r' || k === 'R') toggleAngleMode();
+  else if (k === 'i' || k === 'I') toggleInv();
+  else handled = false;
+  if (handled) e.preventDefault();
 });
 
 render();
