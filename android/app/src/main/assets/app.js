@@ -1,371 +1,424 @@
-// ===== 科学计算器核心逻辑 =====
+// ===== 科学计算器 v5.0 =====
+//
+// 输入模型：atoms（原子数组）+ caret（光标在显示文本中的字符下标）
+// - 数字原子可逐字符编辑：点击任意位置定位光标，可在任意位置插入/删除
+// - 函数、括号、运算符等原子整体编辑，光标自动吸附到原子边界
+// - 结果只在按下 = 后显示；输入阶段只显示表达式和一个闪烁光标
 
 const state = {
-  tokens: [],          // 内部 token 列表
-  result: 0,           // 当前计算结果
-  angleMode: 'Deg',    // Deg / Rad
-  inv: false,          // 反函数模式
-  memory: 0,           // 存储器
-  justEvaluated: false, // 刚按过 =
+  atoms: [],
+  caret: 0,
+  result: 0,
+  angleMode: 'Deg',   // Deg / Rad
+  inv: false,         // 反函数模式
+  memory: 0,          // 存储器
+  justEvaluated: false,
   error: false,
 };
-
-// Token 类型: num, op, lparen, rparen, func, const, fact, pct
-// op 值: + - * / ^  (内部用 - * /，显示用 − × ÷)
-// func 值: sin cos tan asin acos atan ln log sqrt cbrt exp pow10
-// const 值: pi e
 
 const $ = (id) => document.getElementById(id);
 const expressionEl = $('expression');
 const resultEl = $('result');
 const modeIndicator = $('modeIndicator');
 
-// ---------- 渲染 ----------
-function render() {
-  const text = tokensToString(state.tokens);
-  if (state.error) {
-    expressionEl.textContent = text;
-    resultEl.textContent = '错误';
-  } else if (state.justEvaluated) {
-    // 已按 =：上方显示完整表达式，下方显示结果
-    expressionEl.textContent = text;
-    resultEl.textContent = formatNumber(state.result);
-  } else {
-    // 输入过程中只显示正在输入的内容，不提前显示计算结果
-    expressionEl.textContent = '';
-    resultEl.textContent = text || '0';
-  }
-  modeIndicator.textContent = state.angleMode + (state.inv ? ' · Inv' : '');
+const OP_TEXT = { '+': '+', '-': '−', '*': '×', '/': '÷', '^': '^', root: 'ʸ√' };
+const FUNC_TEXT = {
+  sin: 'sin(', cos: 'cos(', tan: 'tan(',
+  asin: 'asin(', acos: 'acos(', atan: 'atan(',
+  ln: 'ln(', log: 'log(', sqrt: '√(', cbrt: '∛(',
+  exp: 'e^(', pow10: '10^(',
+};
+
+const numAtom = (s) => ({ t: 'num', s });
+const opAtom = (v) => ({ t: 'op', s: OP_TEXT[v], v });
+const lpAtom = () => ({ t: 'lparen', s: '(' });
+const rpAtom = () => ({ t: 'rparen', s: ')' });
+const constAtom = (k) => ({ t: 'const', s: k === 'pi' ? 'π' : 'e', v: k });
+const funcAtom = (f) => ({ t: 'func', s: FUNC_TEXT[f], v: f });
+const postfixAtom = (k) => ({ t: 'postfix', s: k === 'fact' ? '!' : '%', v: k });
+
+// ---------- 原子 / 光标工具 ----------
+function atomsText() { return state.atoms.map(a => a.s).join(''); }
+
+function totalLen() {
+  let n = 0;
+  for (const a of state.atoms) n += a.s.length;
+  return n;
 }
 
-function tokensToString(tokens) {
-  let s = '';
-  for (const t of tokens) {
-    switch (t.type) {
-      case 'num': s += t.value; break;
-      case 'op':
-        s += t.value === '-' ? '−' : t.value === '*' ? '×' : t.value === '/' ? '÷' : t.value;
-        break;
-      case 'lparen': s += '('; break;
-      case 'rparen': s += ')'; break;
-      case 'func': s += funcDisplay(t.value); break;
-      case 'const': s += t.value === 'pi' ? 'π' : 'e'; break;
-      case 'fact': s += '!'; break;
-      case 'pct': s += '%'; break;
+// 返回光标两侧的原子；若光标落在原子内部则返回 inside/offset
+function atomsBeforeAfter(c) {
+  let p = 0;
+  for (let i = 0; i < state.atoms.length; i++) {
+    const a = state.atoms[i];
+    const len = a.s.length;
+    if (c > p && c < p + len) {
+      return { idx: i, left: a, right: a, inside: a, offset: c - p };
     }
+    if (c === p) {
+      return { idx: i, left: i > 0 ? state.atoms[i - 1] : null, right: a };
+    }
+    if (c === p + len) {
+      return { idx: i + 1, left: a, right: i + 1 < state.atoms.length ? state.atoms[i + 1] : null };
+    }
+    p += len;
   }
-  return s;
+  const last = state.atoms.length ? state.atoms[state.atoms.length - 1] : null;
+  return { idx: state.atoms.length, left: last, right: null };
 }
 
-function funcDisplay(f) {
-  const map = { pow10: '10^', exp: 'e^', sqrt: '√', cbrt: '∛' };
-  return map[f] || f;
+// 光标所在原子（落在末尾边界时返回 null）
+function atomContaining(c) {
+  let p = 0;
+  for (let i = 0; i < state.atoms.length; i++) {
+    const len = state.atoms[i].s.length;
+    if (c >= p && c < p + len) return { idx: i, offset: c - p, atom: state.atoms[i] };
+    p += len;
+  }
+  return null;
 }
 
-function formatNumber(n) {
-  if (!isFinite(n)) return '错误';
-  if (n === 0) return '0';
-  const abs = Math.abs(n);
-  let s;
-  if (abs >= 1e16 || abs < 1e-9) {
-    s = n.toExponential(10);
+// 合法光标位置：数字内部任意位置；其它原子内部吸附到最近边界
+function legalCaret(c) {
+  c = Math.max(0, Math.min(totalLen(), c));
+  const info = atomContaining(c);
+  if (info && info.atom.t !== 'num') {
+    const start = c - info.offset;
+    return info.offset < info.atom.s.length / 2 ? start : start + info.atom.s.length;
+  }
+  return c;
+}
+
+// 光标不能停在数字内部（用于插入运算符、括号、函数等整体原子）
+function snapOutOfNum() {
+  const c = legalCaret(state.caret);
+  const info = atomContaining(c);
+  if (info && info.atom.t === 'num' && info.offset > 0) {
+    state.caret = c - info.offset + info.atom.s.length;
   } else {
-    s = parseFloat(n.toPrecision(15)).toString();
-  }
-  return s;
-}
-
-// ---------- Token 辅助 ----------
-function lastToken() { return state.tokens[state.tokens.length - 1]; }
-function isNumToken(t) { return t && t.type === 'num'; }
-function isOpToken(t) { return t && t.type === 'op'; }
-function isStartOfExpr() {
-  return state.tokens.length === 0 || lastToken().type === 'lparen' ||
-    (lastToken().type === 'op' && lastToken().value !== 'fact');
-}
-
-// 按 = 显示结果后继续运算：把表达式折叠为上一次结果，作为新表达式起点
-// （任何按键都只显示表达式，必须再按 = 才显示新答案）
-function continueFromResult() {
-  if (state.justEvaluated) {
-    state.tokens = [{ type: 'num', value: formatNumber(state.result) }];
-    state.justEvaluated = false;
+    state.caret = c;
   }
 }
 
-// ---------- 数字输入 ----------
+function moveCaret(delta) {
+  const cur = legalCaret(state.caret);
+  let t = Math.max(0, Math.min(totalLen(), cur + delta));
+  const info = atomContaining(t);
+  if (info && info.atom.t !== 'num') {
+    t = delta > 0 ? (t - info.offset + info.atom.s.length) : (t - info.offset);
+  }
+  state.caret = Math.max(0, Math.min(totalLen(), t));
+}
+
+function isValueEnd(a) {
+  if (!a) return false;
+  if (a.t === 'num') return a.s !== '' && a.s !== '-';
+  return a.t === 'const' || a.t === 'rparen' || a.t === 'postfix';
+}
+
+function isValueStart(a) {
+  if (!a) return false;
+  return a.t === 'num' || a.t === 'const' || a.t === 'func' || a.t === 'lparen';
+}
+
+// ---------- 数字输入（逐字符编辑） ----------
+function insertDigitChar(ch) {
+  const c = legalCaret(state.caret);
+  const inside = atomContaining(c);
+  // 光标在数字内部
+  if (inside && inside.atom.t === 'num') {
+    const num = inside.atom;
+    if (ch === '.' && num.s.includes('.')) return;
+    const pos = inside.offset;
+    let s = num.s;
+    if (s === '0' && pos === s.length && ch !== '.') s = ch;
+    else s = s.slice(0, pos) + ch + s.slice(pos);
+    num.s = s;
+    state.caret = c + 1;
+    return;
+  }
+  const { idx, left, right } = atomsBeforeAfter(c);
+  // 紧贴数字末尾 -> 追加
+  if (left && left.t === 'num') {
+    if (ch === '.' && left.s.includes('.')) return;
+    if (left.s === '0' && ch !== '.') left.s = ch;
+    else left.s += ch;
+    state.caret = c + 1;
+    return;
+  }
+  // 紧贴数字开头 -> 前插
+  if (right && right.t === 'num' && !isValueEnd(left)) {
+    if (ch === '.' && right.s.includes('.')) return;
+    if (right.s === '0' && ch !== '.') right.s = ch;
+    else right.s = ch + right.s;
+    state.caret = c + 1;
+    return;
+  }
+  // 新建数字原子（必要时补隐式乘号）
+  const list = [];
+  if (isValueEnd(left)) list.push(opAtom('*'));
+  list.push(numAtom(ch === '.' ? '0.' : ch));
+  state.atoms.splice(idx, 0, ...list);
+  let added = 0;
+  for (const a of list) added += a.s.length;
+  state.caret = c + added;
+}
+
 function inputDigit(d) {
   if (state.error) clearAll();
-  if (state.justEvaluated) {
-    state.tokens = [];
-    state.justEvaluated = false;
-  }
-  const lt = lastToken();
-  if (isNumToken(lt)) {
-    // 不允许前导多个 0
-    if (lt.value === '0') lt.value = d;
-    else lt.value += d;
-  } else {
-    // 隐式乘法: 前一个是数字/右括号/阶乘/百分号/常量
-    if (lt && (lt.type === 'rparen' || lt.type === 'fact' || lt.type === 'pct' || lt.type === 'const' || lt.type === 'num')) {
-      state.tokens.push({ type: 'op', value: '*' });
-    }
-    state.tokens.push({ type: 'num', value: d });
-  }
-  updateLiveResult();
+  if (state.justEvaluated) { state.atoms = []; state.caret = 0; state.justEvaluated = false; }
+  insertDigitChar(d);
   render();
 }
 
 function inputDot() {
   if (state.error) clearAll();
-  if (state.justEvaluated) {
-    state.tokens = [];
-    state.justEvaluated = false;
-  }
-  const lt = lastToken();
-  if (isNumToken(lt)) {
-    if (!lt.value.includes('.')) lt.value += '.';
-  } else {
-    if (lt && (lt.type === 'rparen' || lt.type === 'fact' || lt.type === 'pct' || lt.type === 'const' || lt.type === 'num')) {
-      state.tokens.push({ type: 'op', value: '*' });
-    }
-    state.tokens.push({ type: 'num', value: '0.' });
-  }
+  if (state.justEvaluated) { state.atoms = []; state.caret = 0; state.justEvaluated = false; }
+  insertDigitChar('.');
   render();
 }
 
 // ---------- 运算符 ----------
-function inputOp(op) {
+function inputOp(v) {
   if (state.error) return;
-  continueFromResult();
-  const lt = lastToken();
-  // 负号处理
-  if (op === '-' && (state.tokens.length === 0 || (lt && (lt.type === 'lparen' || lt.type === 'op')))) {
-    // 一元负号: 作为数字的一部分
-    state.tokens.push({ type: 'num', value: '-' });
+  if (state.justEvaluated) continueFromResult();
+  snapOutOfNum();
+  const c = legalCaret(state.caret);
+  const { idx, left } = atomsBeforeAfter(c);
+
+  // 一元负号：表达式开头 / 左括号后 / 运算符后
+  if (v === '-' && (!left || left.t === 'op' || left.t === 'lparen' || left.t === 'func')) {
+    state.atoms.splice(idx, 0, numAtom('-'));
+    state.caret = c + 1;
     render();
     return;
   }
-  if (isOpToken(lt)) {
-    // 替换上一个运算符
-    lt.value = op;
-  } else if (lt && (lt.type === 'num' || lt.type === 'rparen' || lt.type === 'fact' || lt.type === 'pct' || lt.type === 'const')) {
-    state.tokens.push({ type: 'op', value: op });
-  } else if (!lt) {
-    // 表达式开头，用结果继续
-    state.tokens.push({ type: 'num', value: String(state.result) });
-    state.tokens.push({ type: 'op', value: op });
+  if (left && left.t === 'op') {
+    left.v = v;
+    left.s = OP_TEXT[v];
+    state.caret = c;
+  } else if (isValueEnd(left)) {
+    const a = opAtom(v);
+    state.atoms.splice(idx, 0, a);
+    state.caret = c + a.s.length;
   }
-  updateLiveResult();
   render();
+}
+
+// ---------- 括号 ----------
+function parenDepthBefore(c) {
+  let depth = 0, pos = 0;
+  for (const a of state.atoms) {
+    if (pos >= c) break;
+    if (a.t === 'lparen' || a.t === 'func') depth++;
+    else if (a.t === 'rparen') depth--;
+    pos += a.s.length;
+  }
+  return depth;
 }
 
 function inputParen(p) {
   if (state.error) clearAll();
   if (state.justEvaluated) {
-    if (p === '(') {
-      // 结果显示后按 ( ：开始全新表达式
-      state.tokens = [];
-      state.justEvaluated = false;
-    } else {
-      return; // 结果显示后按 ) ：无括号可闭合
-    }
+    if (p === '(') { state.atoms = []; state.caret = 0; state.justEvaluated = false; }
+    else return;
   }
   if (p === '(') {
-    const lt = lastToken();
-    if (lt && (lt.type === 'num' || lt.type === 'rparen' || lt.type === 'fact' || lt.type === 'pct' || lt.type === 'const')) {
-      state.tokens.push({ type: 'op', value: '*' });
-    }
-    state.tokens.push({ type: 'lparen' });
+    snapOutOfNum();
+    const c = legalCaret(state.caret);
+    const { idx, left } = atomsBeforeAfter(c);
+    const list = [];
+    if (isValueEnd(left)) list.push(opAtom('*'));
+    list.push(lpAtom());
+    state.atoms.splice(idx, 0, ...list);
+    state.caret = c + list.length;
   } else {
-    // 右括号: 只有当有未匹配的左括号时
-    let depth = 0;
-    for (const t of state.tokens) {
-      if (t.type === 'lparen') depth++;
-      else if (t.type === 'rparen') depth--;
-    }
-    if (depth > 0) {
-      const lt = lastToken();
-      if (lt && lt.type === 'num' && lt.value === '-') return; // 不允许空括号
-      state.tokens.push({ type: 'rparen' });
+    snapOutOfNum();
+    const c = legalCaret(state.caret);
+    const { left } = atomsBeforeAfter(c);
+    // 不允许空括号
+    if (left && (left.t === 'lparen' || left.t === 'func')) return;
+    if (parenDepthBefore(c) > 0) {
+      state.atoms.splice(atomsBeforeAfter(c).idx, 0, rpAtom());
+      state.caret = c + 1;
     }
   }
-  updateLiveResult();
   render();
 }
 
 // ---------- 常量 ----------
-function inputConst(c) {
+function inputConst(k) {
   if (state.error) clearAll();
-  if (state.justEvaluated) { state.tokens = []; state.justEvaluated = false; }
-  const lt = lastToken();
-  if (lt && (lt.type === 'num' || lt.type === 'rparen' || lt.type === 'fact' || lt.type === 'pct' || lt.type === 'const')) {
-    state.tokens.push({ type: 'op', value: '*' });
-  }
-  state.tokens.push({ type: 'const', value: c });
-  updateLiveResult();
+  if (state.justEvaluated) { state.atoms = []; state.caret = 0; state.justEvaluated = false; }
+  snapOutOfNum();
+  const c = legalCaret(state.caret);
+  const { idx, left } = atomsBeforeAfter(c);
+  const list = [];
+  if (isValueEnd(left)) list.push(opAtom('*'));
+  list.push(constAtom(k));
+  state.atoms.splice(idx, 0, ...list);
+  state.caret = c + list.length;
   render();
 }
 
 // ---------- 函数 ----------
 function inputFunc(f) {
   if (state.error) clearAll();
-  if (state.justEvaluated) { state.tokens = []; state.justEvaluated = false; }
-  const lt = lastToken();
-  // 隐式乘法
-  if (lt && (lt.type === 'num' || lt.type === 'rparen' || lt.type === 'fact' || lt.type === 'pct' || lt.type === 'const')) {
-    state.tokens.push({ type: 'op', value: '*' });
-  }
-  state.tokens.push({ type: 'func', value: f });
-  state.tokens.push({ type: 'lparen' });
+  if (state.justEvaluated) { state.atoms = []; state.caret = 0; state.justEvaluated = false; }
+  snapOutOfNum();
+  const c = legalCaret(state.caret);
+  const { idx, left } = atomsBeforeAfter(c);
+  const list = [];
+  if (isValueEnd(left)) list.push(opAtom('*'));
+  const fa = funcAtom(f);
+  list.push(fa);
+  state.atoms.splice(idx, 0, ...list);
+  let added = 0;
+  for (const a of list) added += a.s.length;
+  state.caret = c + added;
   render();
 }
 
-// ---------- 后置运算: x², x³, x!, %, 1/x ----------
-function appendPostfix(op) {
+// ---------- 后置运算: x² / x³ / x! / % ----------
+function appendPostfix(kind) {
   if (state.error) return;
-  // 结果显示后按 x²/x³/x!/%：折叠为结果再应用，且必须再按 = 才出答案
-  continueFromResult();
-  const lt = lastToken();
-  if (!lt) return;
-  if (lt.type === 'num' && lt.value === '-') return;
-  if (lt.type === 'op') return;
-  if (op === 'sq') {
-    state.tokens.push({ type: 'op', value: '^' });
-    state.tokens.push({ type: 'num', value: '2' });
-  } else if (op === 'cb') {
-    state.tokens.push({ type: 'op', value: '^' });
-    state.tokens.push({ type: 'num', value: '3' });
-  } else if (op === 'fact') {
-    state.tokens.push({ type: 'fact' });
-  } else if (op === 'pct') {
-    state.tokens.push({ type: 'pct' });
-  }
-  updateLiveResult();
+  if (state.justEvaluated) continueFromResult();
+  snapOutOfNum();
+  const c = legalCaret(state.caret);
+  const { idx, left } = atomsBeforeAfter(c);
+  if (!isValueEnd(left)) return;
+  const list = [];
+  if (kind === 'sq') { list.push(opAtom('^'), numAtom('2')); }
+  else if (kind === 'cb') { list.push(opAtom('^'), numAtom('3')); }
+  else if (kind === 'fact') { list.push(postfixAtom('fact')); }
+  else if (kind === 'pct') { list.push(postfixAtom('pct')); }
+  state.atoms.splice(idx, 0, ...list);
+  let added = 0;
+  for (const a of list) added += a.s.length;
+  state.caret = c + added;
   render();
 }
 
-// 1/x: 将最后一个操作数包裹为 (1÷x)
+// ---------- 1/x：把光标前的操作数包成 (1÷x) ----------
+function findOperandSpanBefore(idx) {
+  let i = idx - 1;
+  if (i < 0) return null;
+  while (i >= 0 && state.atoms[i].t === 'postfix') i--;
+  if (i < 0) return null;
+  const a = state.atoms[i];
+  if (a.t === 'num') {
+    if (a.s === '-' || a.s === '') return null;
+    return { start: i, end: idx - 1 };
+  }
+  if (a.t === 'const') return { start: i, end: idx - 1 };
+  if (a.t === 'rparen') {
+    let depth = 0, j = i;
+    while (j >= 0) {
+      const t = state.atoms[j];
+      if (t.t === 'rparen') depth++;
+      else if (t.t === 'lparen' || t.t === 'func') {
+        depth--;
+        if (depth === 0) break;
+      }
+      j--;
+    }
+    if (j < 0) return null;
+    return { start: j, end: idx - 1 };
+  }
+  return null;
+}
+
 function inputReciprocal() {
   if (state.error) return;
-  // 结果显示后按 1/x：折叠为结果再取倒数，且必须再按 = 才出答案
-  continueFromResult();
-  const span = findLastOperandSpan();
+  if (state.justEvaluated) continueFromResult();
+  snapOutOfNum();
+  const c = legalCaret(state.caret);
+  const { idx } = atomsBeforeAfter(c);
+  const span = findOperandSpanBefore(idx);
   if (!span) return;
-  const operand = state.tokens.slice(span.start, span.end + 1);
-  const wrapped = [
-    { type: 'lparen' },
-    { type: 'num', value: '1' },
-    { type: 'op', value: '/' },
-    ...operand,
-    { type: 'rparen' },
-  ];
-  state.tokens.splice(span.start, span.end - span.start + 1, ...wrapped);
-  updateLiveResult();
+  const operand = state.atoms.slice(span.start, span.end + 1);
+  const wrapped = [lpAtom(), numAtom('1'), opAtom('/'), ...operand, rpAtom()];
+  state.atoms.splice(span.start, span.end - span.start + 1, ...wrapped);
+  let flat = 0;
+  for (let i = 0; i < span.start + wrapped.length; i++) flat += state.atoms[i].s.length;
+  state.caret = flat;
   render();
 }
 
-// 找到最后一个操作数的 token 范围 [start, end]
-function findLastOperandSpan() {
-  if (state.tokens.length === 0) return null;
-  let i = state.tokens.length - 1;
-  const t = state.tokens[i];
-  if (t.type === 'num') return { start: i, end: i };
-  if (t.type === 'const') return { start: i, end: i };
-  if (t.type === 'rparen') {
-    let depth = 1;
-    let j = i - 1;
-    while (j >= 0 && depth > 0) {
-      if (state.tokens[j].type === 'rparen') depth++;
-      else if (state.tokens[j].type === 'lparen') depth--;
-      j--;
-    }
-    // j 现在是匹配的 ( 的前一个
-    // 如果这个 ( 属于一个 func，则 span 从 func 开始
-    if (j >= 0 && state.tokens[j + 1].type === 'lparen') {
-      let start = j + 1;
-      if (j >= 0 && state.tokens[j].type === 'func') start = j;
-      return { start, end: i };
-    }
-    return { start: j + 1, end: i };
-  }
-  if (t.type === 'fact' || t.type === 'pct') {
-    // 找到其操作数的开头
-    let k = i - 1;
-    while (k >= 0 && (state.tokens[k].type === 'fact' || state.tokens[k].type === 'pct')) k--;
-    const sub = findOperandEndingAt(k);
-    if (sub) return { start: sub.start, end: i };
-  }
-  return null;
-}
-
-function findOperandEndingAt(idx) {
-  if (idx < 0) return null;
-  const t = state.tokens[idx];
-  if (t.type === 'num' || t.type === 'const') return { start: idx, end: idx };
-  if (t.type === 'rparen') {
-    let depth = 1, j = idx - 1;
-    while (j >= 0 && depth > 0) {
-      if (state.tokens[j].type === 'rparen') depth++;
-      else if (state.tokens[j].type === 'lparen') depth--;
-      j--;
-    }
-    let start = j + 1;
-    if (j >= 0 && state.tokens[j].type === 'func') start = j;
-    return { start, end: idx };
-  }
-  return null;
-}
-
-// ---------- x^y / y√x ----------
+// ---------- xʸ / ʸ√x ----------
 function inputPower() {
   if (state.error) return;
-  continueFromResult();
-  const lt = lastToken();
-  if (!lt || lt.type === 'op' || (lt.type === 'num' && lt.value === '-')) {
-    if (state.result) {
-      state.tokens.push({ type: 'num', value: String(state.result) });
-    } else return;
-  }
-  state.tokens.push({ type: 'op', value: '^' });
-  render();
+  if (state.justEvaluated) continueFromResult();
+  snapOutOfNum();
+  inputOp('^');
 }
 
 function inputNthRoot() {
   if (state.error) return;
-  continueFromResult();
-  const lt = lastToken();
-  if (!lt || lt.type === 'op' || (lt.type === 'num' && lt.value === '-')) {
-    if (state.result) {
-      state.tokens.push({ type: 'num', value: String(state.result) });
-    } else return;
+  if (state.justEvaluated) continueFromResult();
+  snapOutOfNum();
+  inputOp('root');
+}
+
+// ---------- 删除 ----------
+function deleteCharAt(pos) {
+  const info = atomContaining(pos);
+  if (!info) return;
+  if (info.atom.t === 'num') {
+    info.atom.s = info.atom.s.slice(0, info.offset) + info.atom.s.slice(info.offset + 1);
+    if (info.atom.s === '') state.atoms.splice(info.idx, 1);
+    state.caret = pos;
+  } else {
+    // 整体删除该原子
+    state.atoms.splice(info.idx, 1);
+    state.caret = pos - info.offset;
+    // 删除运算符后若两侧都是数字：合并成一个数字，避免显示歧义
+    const left = info.idx - 1 >= 0 ? state.atoms[info.idx - 1] : null;
+    const right = info.idx < state.atoms.length ? state.atoms[info.idx] : null;
+    if (left && right && left.t === 'num' && right.t === 'num') {
+      if (right.s.startsWith('-')) {
+        state.atoms.splice(info.idx, 0, opAtom('*'));
+      } else {
+        left.s += right.s;
+        state.atoms.splice(info.idx, 1);
+      }
+    }
   }
-  // y√x  =>  x^(1/y). 这里把当前表达式作为 y，用 root 运算符
-  state.tokens.push({ type: 'op', value: 'root' });
+}
+
+function backspace() {
+  if (state.error) { clearAll(); return; }
+  if (state.justEvaluated) {
+    // 结果状态下退格：转为编辑结果
+    const s = formatNumber(state.result);
+    state.atoms = [numAtom(s)];
+    state.caret = s.length;
+    state.justEvaluated = false;
+  }
+  const c = legalCaret(state.caret);
+  if (c === 0) { render(); return; }
+  deleteCharAt(c - 1);
   render();
 }
 
-// ---------- 退格 ----------
-function backspace() {
+function deleteForward() {
   if (state.error) { clearAll(); return; }
-  if (state.justEvaluated) { clearAll(); return; }
-  if (state.tokens.length === 0) return;
-  const lt = lastToken();
-  if (isNumToken(lt) && lt.value.length > 1) {
-    lt.value = lt.value.slice(0, -1);
-  } else {
-    state.tokens.pop();
-    // 如果弹出的是 lparen，且前面是 func，把 func 也弹出
-    const nl = lastToken();
-    if (nl && nl.type === 'func') state.tokens.pop();
+  if (state.justEvaluated) {
+    const s = formatNumber(state.result);
+    state.atoms = [numAtom(s)];
+    state.caret = s.length;
+    state.justEvaluated = false;
   }
-  updateLiveResult();
+  const c = legalCaret(state.caret);
+  if (c >= totalLen()) { render(); return; }
+  deleteCharAt(c);
   render();
 }
 
 // ---------- 清除 ----------
 function clearAll() {
-  state.tokens = [];
+  state.atoms = [];
+  state.caret = 0;
   state.result = 0;
   state.error = false;
   state.justEvaluated = false;
@@ -375,28 +428,36 @@ function clearAll() {
 // ---------- 存储器 ----------
 function memoryClear() { state.memory = 0; render(); }
 function memoryAdd() {
-  const v = currentDisplayValue();
+  const v = currentValue();
   if (isFinite(v)) state.memory += v;
+  render();
 }
 function memorySub() {
-  const v = currentDisplayValue();
+  const v = currentValue();
   if (isFinite(v)) state.memory -= v;
+  render();
 }
 function memoryRecall() {
   if (state.error) clearAll();
-  if (state.justEvaluated) { state.tokens = []; state.justEvaluated = false; }
-  const lt = lastToken();
-  if (lt && (lt.type === 'num' || lt.type === 'rparen' || lt.type === 'fact' || lt.type === 'pct' || lt.type === 'const')) {
-    state.tokens.push({ type: 'op', value: '*' });
-  }
-  state.tokens.push({ type: 'num', value: String(state.memory) });
-  updateLiveResult();
+  if (state.justEvaluated) { state.atoms = []; state.caret = 0; state.justEvaluated = false; }
+  snapOutOfNum();
+  const c = legalCaret(state.caret);
+  const { idx, left } = atomsBeforeAfter(c);
+  const list = [];
+  if (isValueEnd(left)) list.push(opAtom('*'));
+  list.push(numAtom(formatNumber(state.memory)));
+  state.atoms.splice(idx, 0, ...list);
+  let added = 0;
+  for (const a of list) added += a.s.length;
+  state.caret = c + added;
   render();
 }
-function currentDisplayValue() {
+
+function currentValue() {
   if (state.error) return NaN;
-  if (state.tokens.length === 0) return state.result;
-  try { return evaluate(state.tokens); } catch (e) { return NaN; }
+  const tokens = atomsToTokens();
+  if (!tokens.length) return state.result;
+  try { return evaluate(prepareTokens(tokens)); } catch (e) { return NaN; }
 }
 
 // ---------- 模式切换 ----------
@@ -410,49 +471,97 @@ function toggleInv() {
 }
 
 // ---------- 求值 ----------
-function evaluateNow() {
-  if (state.tokens.length === 0) return;
-  try {
-    // 去掉末尾多余的运算符，并自动补全未闭合的括号
-    const tokens = [...state.tokens];
-    while (tokens.length && tokens[tokens.length - 1].type === 'op') tokens.pop();
-    if (tokens.length === 0) return;
-    let depth = 0;
-    for (const t of tokens) {
-      if (t.type === 'lparen') depth++;
-      else if (t.type === 'rparen') depth--;
+function atomsToTokens() {
+  const tokens = [];
+  let prevEnd = false;
+  for (const a of state.atoms) {
+    if (a.t === 'num' && (a.s === '' || a.s === '-')) continue;
+    if (prevEnd && isValueStart(a)) tokens.push({ type: 'op', value: '*' });
+    switch (a.t) {
+      case 'num': tokens.push({ type: 'num', value: a.s }); break;
+      case 'op': tokens.push({ type: 'op', value: a.v }); break;
+      case 'lparen': tokens.push({ type: 'lparen' }); break;
+      case 'rparen': tokens.push({ type: 'rparen' }); break;
+      case 'func':
+        tokens.push({ type: 'func', value: a.v });
+        tokens.push({ type: 'lparen' });
+        break;
+      case 'const': tokens.push({ type: 'const', value: a.v }); break;
+      case 'postfix': tokens.push({ type: a.v === 'fact' ? 'fact' : 'pct' }); break;
     }
-    while (depth > 0) { tokens.push({ type: 'rparen' }); depth--; }
+    prevEnd = isValueEnd(a);
+  }
+  return tokens;
+}
+
+// 去掉末尾多余运算符，并补全未闭合括号
+function prepareTokens(tokens) {
+  const t = tokens.slice();
+  while (t.length && t[t.length - 1].type === 'op') t.pop();
+  let depth = 0;
+  for (const x of t) {
+    if (x.type === 'lparen') depth++;
+    else if (x.type === 'rparen') depth--;
+  }
+  while (depth > 0) { t.push({ type: 'rparen' }); depth--; }
+  return t;
+}
+
+function evaluateNow() {
+  if (state.error) { clearAll(); return; }
+  if (state.justEvaluated) return;
+  const tokens = prepareTokens(atomsToTokens());
+  if (!tokens.length) return;
+  try {
     const val = evaluate(tokens);
     if (!isFinite(val)) throw new Error('math error');
     state.result = val;
     state.justEvaluated = true;
-    state.error = false;
+    // 表达式行显示完整的表达式（含自动补全的括号）
+    state.atoms = tokensToAtoms(tokens);
   } catch (e) {
     state.error = true;
   }
   render();
 }
 
-function updateLiveResult() {
-  if (state.tokens.length === 0) { state.result = 0; return; }
-  try {
-    const tokens = [...state.tokens];
-    let depth = 0;
-    for (const t of tokens) {
-      if (t.type === 'lparen') depth++;
-      else if (t.type === 'rparen') depth--;
+// 把补全后的 token 还原成原子，用于「按 = 后上方小字」显示
+function tokensToAtoms(tokens) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.type === 'num') out.push(numAtom(t.value));
+    else if (t.type === 'op') out.push(opAtom(t.value));
+    else if (t.type === 'lparen') out.push(lpAtom());
+    else if (t.type === 'rparen') out.push(rpAtom());
+    else if (t.type === 'const') out.push(constAtom(t.value));
+    else if (t.type === 'fact') out.push(postfixAtom('fact'));
+    else if (t.type === 'pct') out.push(postfixAtom('pct'));
+    else if (t.type === 'func') {
+      // 函数后面紧跟的 lparen 合并进函数原子
+      if (i + 1 < tokens.length && tokens[i + 1].type === 'lparen') {
+        out.push(funcAtom(t.value));
+        i++;
+      } else {
+        out.push(funcAtom(t.value));
+      }
     }
-    while (depth > 0) { tokens.push({ type: 'rparen' }); depth--; }
-    const val = evaluate(tokens);
-    if (isFinite(val)) state.result = val;
-  } catch (e) { /* 忽略实时计算错误 */ }
+  }
+  return out;
+}
+
+// 按 = 后继续运算：把表达式折叠成上一次结果
+function continueFromResult() {
+  if (!state.justEvaluated) return;
+  const s = formatNumber(state.result);
+  state.atoms = [numAtom(s)];
+  state.caret = s.length;
+  state.justEvaluated = false;
 }
 
 // ===== 表达式求值 (shunting-yard + RPN) =====
 function evaluate(tokens) {
-  const rpn = toRPN(tokens);
-  return evalRPN(rpn);
+  return evalRPN(toRPN(tokens));
 }
 
 function toRPN(tokens) {
@@ -460,32 +569,28 @@ function toRPN(tokens) {
   const ops = [];
   const prec = { '+': 1, '-': 1, '*': 2, '/': 2, '^': 3, 'root': 3 };
   const rightAssoc = { '^': true, 'root': true };
-  const funcs = new Set(['sin','cos','tan','asin','acos','atan','ln','log','sqrt','cbrt','exp','pow10']);
 
-  let prev = null;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
-    if (t.type === 'num') {
-      out.push(t);
-    } else if (t.type === 'const') {
+    if (t.type === 'num' || t.type === 'const') {
       out.push(t);
     } else if (t.type === 'func') {
       ops.push(t);
     } else if (t.type === 'lparen') {
       ops.push(t);
     } else if (t.type === 'rparen') {
-      while (ops.length && ops[ops.length-1].type !== 'lparen') {
+      while (ops.length && ops[ops.length - 1].type !== 'lparen') {
         out.push(ops.pop());
       }
       if (!ops.length) throw new Error('paren mismatch');
       ops.pop(); // pop (
-      if (ops.length && ops[ops.length-1].type === 'func') {
+      if (ops.length && ops[ops.length - 1].type === 'func') {
         out.push(ops.pop());
       }
     } else if (t.type === 'op') {
       const o1 = t.value;
       while (ops.length) {
-        const top = ops[ops.length-1];
+        const top = ops[ops.length - 1];
         if (top.type === 'func') { out.push(ops.pop()); continue; }
         if (top.type === 'op') {
           const o2 = top.value;
@@ -497,12 +602,9 @@ function toRPN(tokens) {
         break;
       }
       ops.push(t);
-    } else if (t.type === 'fact') {
-      out.push(t);
-    } else if (t.type === 'pct') {
+    } else if (t.type === 'fact' || t.type === 'pct') {
       out.push(t);
     }
-    prev = t;
   }
   while (ops.length) {
     const o = ops.pop();
@@ -531,28 +633,24 @@ function evalRPN(rpn) {
           stack.push(a / b); break;
         case '^': stack.push(Math.pow(a, b)); break;
         case 'root': {
-          // a root b => a^(1/b)  (a 为被开方数，b 为根指数)
           if (b === 0) throw new Error('root index zero');
-          let rv;
-          if (a < 0 && Number.isInteger(b) && Math.abs(b) % 2 === 1) {
-            rv = -Math.pow(-a, 1 / b);
-          } else {
-            rv = Math.pow(a, 1 / b);
-          }
-          stack.push(rv);
+          stack.push(a < 0 && Number.isInteger(b) && Math.abs(b) % 2 === 1
+            ? -Math.pow(-a, 1 / b)
+            : Math.pow(a, 1 / b));
           break;
         }
       }
     } else if (t.type === 'func') {
       const x = stack.pop();
+      if (x === undefined) throw new Error('bad func');
       const deg = state.angleMode === 'Deg';
       switch (t.value) {
-        case 'sin': stack.push(Math.sin(deg ? x * Math.PI/180 : x)); break;
-        case 'cos': stack.push(Math.cos(deg ? x * Math.PI/180 : x)); break;
-        case 'tan': stack.push(Math.tan(deg ? x * Math.PI/180 : x)); break;
-        case 'asin': { const v = Math.asin(x); stack.push(deg ? v*180/Math.PI : v); break; }
-        case 'acos': { const v = Math.acos(x); stack.push(deg ? v*180/Math.PI : v); break; }
-        case 'atan': { const v = Math.atan(x); stack.push(deg ? v*180/Math.PI : v); break; }
+        case 'sin': stack.push(Math.sin(deg ? x * Math.PI / 180 : x)); break;
+        case 'cos': stack.push(Math.cos(deg ? x * Math.PI / 180 : x)); break;
+        case 'tan': stack.push(Math.tan(deg ? x * Math.PI / 180 : x)); break;
+        case 'asin': { const v = Math.asin(x); stack.push(deg ? v * 180 / Math.PI : v); break; }
+        case 'acos': { const v = Math.acos(x); stack.push(deg ? v * 180 / Math.PI : v); break; }
+        case 'atan': { const v = Math.atan(x); stack.push(deg ? v * 180 / Math.PI : v); break; }
         case 'ln': stack.push(Math.log(x)); break;
         case 'log': stack.push(Math.log10(x)); break;
         case 'sqrt': stack.push(Math.sqrt(x)); break;
@@ -562,9 +660,11 @@ function evalRPN(rpn) {
       }
     } else if (t.type === 'fact') {
       const x = stack.pop();
+      if (x === undefined) throw new Error('bad fact');
       stack.push(factorial(x));
     } else if (t.type === 'pct') {
       const x = stack.pop();
+      if (x === undefined) throw new Error('bad pct');
       stack.push(x / 100);
     }
   }
@@ -573,23 +673,19 @@ function evalRPN(rpn) {
 }
 
 function factorial(n) {
-  if (n < 0 || !Number.isInteger(n)) {
-    // 用伽马函数近似非整数阶乘
-    return gamma(n + 1);
-  }
+  if (n < 0 || !Number.isInteger(n)) return gamma(n + 1);
   if (n > 170) return Infinity;
   let r = 1;
   for (let i = 2; i <= n; i++) r *= i;
   return r;
 }
 
-// Lanczos 伽马近似
 function gamma(z) {
   const g = 7;
   const c = [
     0.99999999999980993, 676.5203681218851, -1259.1392167224028,
     771.32342877765313, -176.61502916214059, 12.507343278686905,
-    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7
+    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
   ];
   if (z < 0.5) return Math.PI / (Math.sin(Math.PI * z) * gamma(1 - z));
   z -= 1;
@@ -599,9 +695,83 @@ function gamma(z) {
   return Math.sqrt(2 * Math.PI) * Math.pow(t, z + 0.5) * Math.exp(-t) * x;
 }
 
-// ===== 按钮定义与渲染 =====
+// ---------- 数字格式化 ----------
+function formatNumber(n) {
+  if (!isFinite(n)) return '错误';
+  if (n === 0) return '0';
+  const abs = Math.abs(n);
+  if (abs >= 1e16 || abs < 1e-9) return n.toExponential(10);
+  return parseFloat(n.toPrecision(15)).toString();
+}
+
+// ===== 渲染 =====
+function render() {
+  if (state.error) {
+    expressionEl.textContent = atomsText();
+    resultEl.textContent = '错误';
+  } else if (state.justEvaluated) {
+    expressionEl.textContent = atomsText();
+    resultEl.textContent = formatNumber(state.result);
+  } else {
+    expressionEl.textContent = '';
+    renderInputLine();
+  }
+  modeIndicator.textContent = state.angleMode + (state.inv ? ' · Inv' : '');
+  updateToggleButtons();
+}
+
+function renderInputLine() {
+  const caret = Math.max(0, Math.min(totalLen(), state.caret));
+  resultEl.textContent = '';
+  const frag = document.createDocumentFragment();
+  let flat = 0;
+  let placed = false;
+  for (const a of state.atoms) {
+    for (let i = 0; i < a.s.length; i++) {
+      if (!placed && caret === flat + i) { frag.appendChild(makeCaret()); placed = true; }
+      const span = document.createElement('span');
+      span.className = 'ch';
+      span.textContent = a.s[i];
+      span.dataset.pos = flat + i;
+      frag.appendChild(span);
+    }
+    flat += a.s.length;
+  }
+  if (!placed) frag.appendChild(makeCaret());
+  resultEl.appendChild(frag);
+  // 光标滚入可视区域
+  const caretEl = document.getElementById('caret');
+  if (caretEl && resultEl.scrollHeight > resultEl.clientHeight) {
+    caretEl.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function makeCaret() {
+  const s = document.createElement('span');
+  s.className = 'caret';
+  s.id = 'caret';
+  return s;
+}
+
+// 根据点击坐标推算光标位置
+function caretFromPoint(x, y) {
+  const chars = resultEl.querySelectorAll('.ch');
+  if (!chars.length) return 0;
+  let best = null, bestD = Infinity;
+  chars.forEach((el) => {
+    const r = el.getBoundingClientRect();
+    const dx = Math.max(r.left - x, 0, x - r.right);
+    const dy = Math.max(r.top - y, 0, y - r.bottom);
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = el; }
+  });
+  const r = best.getBoundingClientRect();
+  const pos = Number(best.dataset.pos);
+  return legalCaret(x > r.left + r.width / 2 ? pos + 1 : pos);
+}
+
+// ===== 按钮定义 =====
 const buttons = [
-  // label, action, class, span
   { l: '(',   a: () => inputParen('('), c: 'func' },
   { l: ')',   a: () => inputParen(')'), c: 'func' },
   { l: '1/x', a: inputReciprocal, c: 'func' },
@@ -651,24 +821,46 @@ const buttons = [
 ];
 
 const keypad = $('keypad');
+let lastLongClearAt = 0;
+
 buttons.forEach(b => {
   const btn = document.createElement('button');
   btn.className = 'btn ' + (b.c || '');
   if (b.span) btn.classList.add('equals');
   if (b.id) btn.id = b.id;
-  // 处理上下标显示
+  btn.dataset.label = b.l;
   if (b.l === 'x²') btn.innerHTML = 'x<sup>2</sup>';
   else if (b.l === 'x³') btn.innerHTML = 'x<sup>3</sup>';
   else if (b.l === 'xʸ') btn.innerHTML = 'x<sup>y</sup>';
   else if (b.l === 'ʸ√x') btn.innerHTML = '<sup>y</sup>√x';
-  else if (b.l === '1/x') btn.innerHTML = '1/x';
   else btn.textContent = b.l;
   btn.tabIndex = -1;
-  btn.addEventListener('click', () => { b.a(); btn.blur(); });
+
+  // 长按 ⌫ 全部清除
+  if (b.l === '⌫') {
+    let timer = null;
+    const stop = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    btn.addEventListener('pointerdown', () => {
+      stop();
+      timer = setTimeout(() => {
+        lastLongClearAt = Date.now();
+        clearAll();
+        timer = null;
+      }, 550);
+    });
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+  }
+
+  btn.addEventListener('click', () => {
+    if (b.l === '⌫' && Date.now() - lastLongClearAt < 500) return;
+    b.a();
+    btn.blur();
+  });
   keypad.appendChild(btn);
 });
 
-// Inv / 角度模式按钮高亮
 function updateToggleButtons() {
   const inv = $('btnInv');
   const ang = $('btnAngle');
@@ -678,8 +870,20 @@ function updateToggleButtons() {
     ang.classList.toggle('active', state.angleMode === 'Rad');
   }
 }
-const _origRender = render;
-render = function() { _origRender(); updateToggleButtons(); };
+
+// ===== 点击显示区定位光标 =====
+resultEl.addEventListener('click', (e) => {
+  if (state.error) return;
+  if (state.justEvaluated) {
+    // 点结果区 -> 进入编辑结果
+    const s = formatNumber(state.result);
+    state.atoms = [numAtom(s)];
+    state.justEvaluated = false;
+    render();
+  }
+  state.caret = caretFromPoint(e.clientX, e.clientY);
+  render();
+});
 
 // ===== 关于弹窗 =====
 const aboutOverlay = $('aboutOverlay');
@@ -693,9 +897,8 @@ aboutBtn.addEventListener('click', () => { openAbout(); aboutBtn.blur(); });
 aboutCloseBtn.addEventListener('click', closeAbout);
 aboutOverlay.addEventListener('click', (e) => { if (e.target === aboutOverlay) closeAbout(); });
 
-// 键盘支持（电脑端可直接用键盘操作所有按键）
+// ===== 键盘支持 =====
 document.addEventListener('keydown', (e) => {
-  // 弹窗打开时，Enter / Esc 关闭弹窗，其余按键不处理
   if (!aboutOverlay.hidden) {
     if (e.key === 'Escape' || e.key === 'Enter') { closeAbout(); e.preventDefault(); }
     return;
@@ -716,11 +919,19 @@ document.addEventListener('keydown', (e) => {
   else if (k === '!') appendPostfix('fact');
   else if (k === 'Enter' || k === '=') evaluateNow();
   else if (k === 'Backspace') backspace();
-  else if (k === 'Escape' || k === 'Delete') clearAll();
+  else if (k === 'Delete') deleteForward();
+  else if (k === 'ArrowLeft') { moveCaret(-1); render(); }
+  else if (k === 'ArrowRight') { moveCaret(1); render(); }
+  else if (k === 'Home') { state.caret = 0; render(); }
+  else if (k === 'End') { state.caret = totalLen(); render(); }
+  else if (k === 'Escape') clearAll();
   else if (k === 'r' || k === 'R') toggleAngleMode();
   else if (k === 'i' || k === 'I') toggleInv();
   else handled = false;
   if (handled) e.preventDefault();
 });
 
+// ===== 启动 =====
 render();
+// 首次启动（每次打开应用）自动弹出关于
+setTimeout(() => { openAbout(); }, 350);

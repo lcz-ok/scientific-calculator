@@ -23,7 +23,15 @@ A full-featured scientific calculator available for both **Windows desktop (.exe
 - `Deg` / `Rad` 角度单位切换 / Degree / Radian toggle
 - 存储器 `MC` / `M+` / `M−` / `MR` / Memory keys
 
-**v3.0 新特性 · What's New in v3.0**
+**v5.0 新特性 · What's New in v5.0**
+- 清空输入后不再显示 0，而是显示一个闪烁的光标 / When the input is cleared, a blinking caret is shown instead of `0`
+- 光标可点击定位到表达式任意位置，可在任意位置插入或删除数字（不再只能从右往左退格）/ The caret can be placed anywhere in the expression by clicking, and digits can be inserted or deleted at any position (no longer backspace-only)
+- 支持键盘方向键、`Home`、`End`、`Delete` 移动/删除光标处字符 / Arrow keys, `Home`, `End`, and `Delete` are supported for moving the caret and deleting characters
+- 长按 `⌫` 可一键清空全部内容，不必再按 `C` / Long-press `⌫` clears everything, no need to press `C`
+- 每次启动应用自动弹出「关于」窗口（中英文）/ The About dialog is shown automatically on every app launch (Chinese + English)
+- 全部按键已逐项自动化验证（44 项用例全部通过）/ All keys are covered by automated tests (44/44 passing)
+
+**v3.0 特性 · v3.0**
 - 结果只在按下 `=` 后显示，输入过程只显示表达式，任何按键都不会提前显示答案 / The result is shown only after pressing `=`; while typing, only the expression is displayed — no key press reveals the answer early
 - 电脑端完整键盘支持（数字、运算符、括号、`Enter`/`=`、退格、清除、模式切换）/ Full keyboard support on desktop (digits, operators, parentheses, `Enter`/`=`, backspace, clear, mode toggles)
 - 右上角「关于」弹窗 / "About" dialog in the top-right corner
