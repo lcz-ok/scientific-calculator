@@ -821,7 +821,6 @@ const buttons = [
 ];
 
 const keypad = $('keypad');
-let lastLongClearAt = 0;
 
 buttons.forEach(b => {
   const btn = document.createElement('button');
@@ -836,25 +835,7 @@ buttons.forEach(b => {
   else btn.textContent = b.l;
   btn.tabIndex = -1;
 
-  // 长按 ⌫ 全部清除
-  if (b.l === '⌫') {
-    let timer = null;
-    const stop = () => { if (timer) { clearTimeout(timer); timer = null; } };
-    btn.addEventListener('pointerdown', () => {
-      stop();
-      timer = setTimeout(() => {
-        lastLongClearAt = Date.now();
-        clearAll();
-        timer = null;
-      }, 550);
-    });
-    btn.addEventListener('pointerup', stop);
-    btn.addEventListener('pointerleave', stop);
-    btn.addEventListener('pointercancel', stop);
-  }
-
   btn.addEventListener('click', () => {
-    if (b.l === '⌫' && Date.now() - lastLongClearAt < 500) return;
     b.a();
     btn.blur();
   });
@@ -933,5 +914,3 @@ document.addEventListener('keydown', (e) => {
 
 // ===== 启动 =====
 render();
-// 首次启动（每次打开应用）自动弹出关于
-setTimeout(() => { openAbout(); }, 350);
