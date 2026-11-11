@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="app-version" content="6.0">
 <title>科学计算器</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -201,6 +202,31 @@
     transition: background 0.1s;
   }
   .about-close:active { background: #1557b0; }
+  /* 更新弹窗 */
+  .update-card { max-width: 340px; }
+  .update-head { font-size: 13px; font-weight: 600; color: #1a73e8; letter-spacing: 0.3px; }
+  .update-version { font-size: 26px; font-weight: 700; color: #202124; margin-top: 6px; }
+  .update-desc { font-size: 13px; color: #5f6368; margin-top: 10px; line-height: 1.5; }
+  .progress-track {
+    height: 8px; border-radius: 4px; background: #e8eaed;
+    margin: 16px 0 8px; overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%; width: 0; background: #1a73e8; border-radius: 4px;
+    transition: width 0.2s ease;
+  }
+  .update-progress-text { font-size: 13px; color: #5f6368; }
+  .update-actions {
+    display: flex; gap: 10px; justify-content: center;
+    margin-top: 18px; flex-wrap: wrap;
+  }
+  .update-actions .about-close { margin-top: 0; }
+  .update-secondary {
+    border: none; background: #eef1f5; color: #5f6368;
+    font-size: 15px; font-weight: 500; padding: 10px 22px;
+    border-radius: 18px; cursor: pointer; font-family: inherit;
+  }
+  .update-secondary:active { background: #e0e4ea; }
 </style>
 </head>
 <body>
@@ -219,11 +245,25 @@
   <div class="about-card">
     <div class="about-icon"><span>+</span><span>−</span><span>×</span><span class="eq">=</span></div>
     <div class="about-title">科学计算器</div>
-    <div class="about-sub">Scientific Calculator · v5.0</div>
+    <div class="about-sub">Scientific Calculator · v6.0</div>
     <div class="about-divider"></div>
     <div class="about-author">刘宸至一首创作！</div>
     <div class="about-author-en">A creation by Liu Chenzhi!</div>
     <button class="about-close" id="aboutClose">关闭 · Close</button>
+  </div>
+</div>
+<!-- 更新弹窗 -->
+<div class="about-overlay" id="updateOverlay" hidden>
+  <div class="about-card update-card">
+    <div class="update-head" id="updateHead">发现新版本 · New version found</div>
+    <div class="update-version" id="updateVersion">v6.0</div>
+    <div class="update-desc" id="updateDesc">正在后台下载更新… · Downloading in background…</div>
+    <div class="progress-track"><div class="progress-bar" id="updateBar"></div></div>
+    <div class="update-progress-text" id="updateProgressText">0%</div>
+    <div class="update-actions">
+      <button class="about-close" id="updatePrimary">下载中 · Downloading</button>
+      <button class="update-secondary" id="updateLater">稍后 · Later</button>
+    </div>
   </div>
 </div>
 <script src="app.js"></script>

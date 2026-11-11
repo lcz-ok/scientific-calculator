@@ -23,6 +23,13 @@ A full-featured scientific calculator available for both **Windows desktop (.exe
 - `Deg` / `Rad` 角度单位切换 / Degree / Radian toggle
 - 存储器 `MC` / `M+` / `M−` / `MR` / Memory keys
 
+**v6.0 新特性 · What's New in v6.0**
+- 长按任意按键等于连续点击该按键（长按 `⌫` 可快速删空，长按数字可连续输入）/ Long-press any key to repeat it continuously (hold `⌫` to erase quickly, hold a digit to type repeatedly)
+- 每次启动自动检测更新：有新版就提示，并在后台自动下载 / Automatically checks for updates on every launch: prompts when a new version exists and downloads it in the background
+- 下载支持断点续传与进度保留：中途退出或重启，下次打开会提示并从中断处继续下载 / Downloads support resumable transfer and persistent progress: after quitting or restarting, it resumes from where it stopped
+- 更新弹窗实时显示已下载进度与百分比 / The update dialog shows live download progress and percentage
+- 下载完成后弹窗提示，可直接安装 / A dialog appears when the download completes, with a one-tap install button
+
 **v5.0 新特性 · What's New in v5.0**
 - 清空输入后不再显示 0，而是显示一个闪烁的光标 / When the input is cleared, a blinking caret is shown instead of `0`
 - 光标可点击定位到表达式任意位置，可在任意位置插入或删除数字（不再只能从右往左退格）/ The caret can be placed anywhere in the expression by clicking, and digits can be inserted or deleted at any position (no longer backspace-only)

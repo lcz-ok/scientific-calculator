@@ -1,4 +1,4 @@
-// ===== 科学计算器 v5.0 =====
+// ===== 科学计算器 v6.0 =====
 //
 // 输入模型：atoms（原子数组）+ caret（光标在显示文本中的字符下标）
 // - 数字原子可逐字符编辑：点击任意位置定位光标，可在任意位置插入/删除
@@ -821,7 +821,8 @@ const buttons = [
 ];
 
 const keypad = $('keypad');
-let lastLongClearAt = 0;
+const REPEAT_DELAY = 450;     // 长按多久后开始连续触发
+const REPEAT_INTERVAL = 90;   // 连续触发间隔
 
 buttons.forEach(b => {
   const btn = document.createElement('button');
@@ -836,25 +837,34 @@ buttons.forEach(b => {
   else btn.textContent = b.l;
   btn.tabIndex = -1;
 
-  // 长按 ⌫ 全部清除
-  if (b.l === '⌫') {
-    let timer = null;
-    const stop = () => { if (timer) { clearTimeout(timer); timer = null; } };
-    btn.addEventListener('pointerdown', () => {
-      stop();
-      timer = setTimeout(() => {
-        lastLongClearAt = Date.now();
-        clearAll();
-        timer = null;
-      }, 550);
-    });
-    btn.addEventListener('pointerup', stop);
-    btn.addEventListener('pointerleave', stop);
-    btn.addEventListener('pointercancel', stop);
-  }
+  // 长按任意按键 = 连续点击该按键
+  let delayTimer = null;
+  let repeatTimer = null;
+  let longFired = false;
+
+  const stopRepeat = () => {
+    if (delayTimer) { clearTimeout(delayTimer); delayTimer = null; }
+    if (repeatTimer) { clearInterval(repeatTimer); repeatTimer = null; }
+  };
+
+  btn.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button > 0) return;
+    stopRepeat();
+    longFired = false;
+    delayTimer = setTimeout(() => {
+      delayTimer = null;
+      longFired = true;
+      b.a();
+      repeatTimer = setInterval(() => { b.a(); }, REPEAT_INTERVAL);
+    }, REPEAT_DELAY);
+  });
+  btn.addEventListener('pointerup', stopRepeat);
+  btn.addEventListener('pointerleave', stopRepeat);
+  btn.addEventListener('pointercancel', stopRepeat);
 
   btn.addEventListener('click', () => {
-    if (b.l === '⌫' && Date.now() - lastLongClearAt < 500) return;
+    stopRepeat();
+    if (longFired) { longFired = false; btn.blur(); return; }
     b.a();
     btn.blur();
   });
@@ -890,15 +900,333 @@ const aboutOverlay = $('aboutOverlay');
 const aboutBtn = $('aboutBtn');
 const aboutCloseBtn = $('aboutClose');
 
-function openAbout() { aboutOverlay.hidden = false; }
-function closeAbout() { aboutOverlay.hidden = true; aboutCloseBtn.blur(); }
+function openAbout() { closeUpdateDialog(); aboutOverlay.hidden = false; }
+function closeAbout() {
+  aboutOverlay.hidden = true;
+  aboutCloseBtn.blur();
+  if (updatePendingShow) { updatePendingShow = false; setTimeout(openUpdateDialog, 120); }
+}
 
 aboutBtn.addEventListener('click', () => { openAbout(); aboutBtn.blur(); });
 aboutCloseBtn.addEventListener('click', closeAbout);
 aboutOverlay.addEventListener('click', (e) => { if (e.target === aboutOverlay) closeAbout(); });
 
+// ===== 自动检测更新（后台下载 / 断点续传 / 进度保留） =====
+const APP_VERSION = (document.querySelector('meta[name="app-version"]') || {}).content || '6.0';
+const UPDATE_API = 'https://api.github.com/repos/lcz-ok/scientific-calculator/releases/latest';
+const UPDATE_STATE_KEY = 'calc_update_state_v1';
+
+const updateOverlay = $('updateOverlay');
+const updateHead = $('updateHead');
+const updateVersion = $('updateVersion');
+const updateDesc = $('updateDesc');
+const updateBar = $('updateBar');
+const updateProgressText = $('updateProgressText');
+const updatePrimary = $('updatePrimary');
+const updateLater = $('updateLater');
+
+let updateCtx = null;          // { version, fileName, url, total, received, status, path, pageUrl }
+let updatePendingShow = false; // 等关于弹窗关闭后再显示更新弹窗
+let updateRetryCount = 0;
+
+function updaterNative() {
+  if (window.calcUpdate) return { kind: 'desktop', api: window.calcUpdate };
+  if (window.AndroidUpdate) return { kind: 'android', api: window.AndroidUpdate };
+  return null;
+}
+
+function parseVersion(v) {
+  return String(v || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+}
+
+function isNewerVersion(remote, local) {
+  const a = parseVersion(remote);
+  const b = parseVersion(local);
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const x = a[i] || 0;
+    const y = b[i] || 0;
+    if (x > y) return true;
+    if (x < y) return false;
+  }
+  return false;
+}
+
+function loadUpdateState() {
+  try { return JSON.parse(localStorage.getItem(UPDATE_STATE_KEY) || 'null'); } catch (e) { return null; }
+}
+
+function saveUpdateState() {
+  if (!updateCtx) return;
+  try {
+    localStorage.setItem(UPDATE_STATE_KEY, JSON.stringify({
+      version: updateCtx.version,
+      fileName: updateCtx.fileName,
+      url: updateCtx.url,
+      received: updateCtx.received,
+      total: updateCtx.total,
+      status: updateCtx.status,
+      path: updateCtx.path || '',
+    }));
+  } catch (e) {}
+}
+
+function clearUpdateState() {
+  try { localStorage.removeItem(UPDATE_STATE_KEY); } catch (e) {}
+}
+
+function normalizeStatus(raw) {
+  if (raw == null) return Promise.resolve(null);
+  if (typeof raw === 'string') {
+    try { return Promise.resolve(JSON.parse(raw)); } catch (e) { return Promise.resolve(null); }
+  }
+  if (typeof raw.then === 'function') return raw.then(v => normalizeStatus(v));
+  return Promise.resolve(raw);
+}
+
+function checkForUpdate() {
+  let xhr;
+  try { xhr = new XMLHttpRequest(); } catch (e) { return; }
+  xhr.open('GET', UPDATE_API, true);
+  xhr.timeout = 15000;
+  try { xhr.setRequestHeader('Accept', 'application/vnd.github+json'); } catch (e) {}
+  xhr.onload = () => {
+    if (xhr.status !== 200) return;
+    let rel = null;
+    try { rel = JSON.parse(xhr.responseText); } catch (e) { return; }
+    handleRelease(rel);
+  };
+  xhr.onerror = () => {};
+  xhr.ontimeout = () => {};
+  try { xhr.send(); } catch (e) {}
+}
+
+function handleRelease(rel) {
+  if (!rel || !rel.tag_name) return;
+  const remote = String(rel.tag_name).replace(/^v/i, '');
+  if (!isNewerVersion(remote, APP_VERSION)) {
+    clearUpdateState();
+    return;
+  }
+  const native = updaterNative();
+  const assets = rel.assets || [];
+  let asset = null;
+  if (native) {
+    const ext = native.kind === 'android' ? '.apk' : '.exe';
+    asset = assets.find(a => a.name && a.name.toLowerCase().endsWith(ext)) || null;
+  }
+  updateCtx = {
+    version: remote,
+    fileName: asset ? asset.name : '',
+    url: asset ? asset.browser_download_url : (rel.html_url || ''),
+    total: asset ? (asset.size || 0) : 0,
+    received: 0,
+    status: native ? 'downloading' : 'manual',
+    path: '',
+    pageUrl: rel.html_url || '',
+  };
+  // 恢复上次打开的下载进度
+  const saved = loadUpdateState();
+  if (saved && saved.version === remote && saved.fileName === updateCtx.fileName) {
+    updateCtx.received = saved.received || 0;
+    updateCtx.total = saved.total || updateCtx.total;
+    updateCtx.path = saved.path || '';
+    updateCtx.status = saved.status === 'done' ? 'done' : 'downloading';
+  }
+  renderUpdateDialog();
+  queueUpdateDialog();
+  if (native && updateCtx.fileName) startNativeDownload();
+}
+
+function queueUpdateDialog() {
+  if (!updateCtx) return;
+  if (!aboutOverlay.hidden) { updatePendingShow = true; return; }
+  openUpdateDialog();
+}
+
+function openUpdateDialog() {
+  if (!updateCtx) return;
+  updateOverlay.hidden = false;
+  renderUpdateDialog();
+}
+
+function closeUpdateDialog() {
+  if (!updateOverlay) return;
+  updateOverlay.hidden = true;
+  if (updateLater) updateLater.blur();
+}
+
+function formatMB(n) {
+  if (!n || n <= 0) return '0 MB';
+  return (n / 1048576).toFixed(n >= 10485760 ? 0 : 1) + ' MB';
+}
+
+function renderUpdateDialog() {
+  if (!updateCtx) return;
+  const c = updateCtx;
+  const pct = c.total > 0 ? Math.min(100, Math.floor((c.received / c.total) * 100)) : 0;
+  updateVersion.textContent = 'v' + c.version;
+  updateHead.textContent = c.status === 'done' ? '更新已就绪 · Update ready' : '发现新版本 · New version found';
+  updateBar.style.width = (c.status === 'done' ? 100 : pct) + '%';
+
+  if (c.status === 'done') {
+    updateDesc.textContent = '下载完成，可立即安装 · Download complete, ready to install';
+    updatePrimary.textContent = '立即安装 · Install';
+    updateProgressText.textContent = '100% · ' + formatMB(c.total || c.received);
+  } else if (c.status === 'error') {
+    updateDesc.textContent = '下载中断，正在自动重试… · Interrupted, retrying automatically…';
+    updatePrimary.textContent = '重试 · Retry';
+    updateProgressText.textContent = pct + '% · ' + formatMB(c.received) + ' / ' + formatMB(c.total);
+  } else if (c.status === 'manual') {
+    updateDesc.textContent = '有新版本可用，请前往发布页下载 · New version available, download from the release page';
+    updatePrimary.textContent = '前往下载 · Download';
+    updateProgressText.textContent = '';
+  } else {
+    updateDesc.textContent = '正在后台下载更新… · Downloading in background…';
+    updatePrimary.textContent = '下载中 · Downloading';
+    updateProgressText.textContent = c.total > 0
+      ? pct + '% · ' + formatMB(c.received) + ' / ' + formatMB(c.total)
+      : formatMB(c.received);
+  }
+  const downloading = c.status === 'downloading';
+  updatePrimary.disabled = downloading;
+  updatePrimary.style.opacity = downloading ? '0.55' : '1';
+  updatePrimary.style.cursor = downloading ? 'default' : 'pointer';
+}
+
+async function startNativeDownload() {
+  const native = updaterNative();
+  if (!native || !updateCtx || !updateCtx.fileName) return;
+  if (updateCtx.status === 'done') return;
+  const fileName = updateCtx.fileName;
+  const api = native.api;
+  try {
+    const st = await normalizeStatus(api.status ? api.status(fileName) : null);
+    if (updateCtx && updateCtx.fileName === fileName && st) {
+      if (st.complete) {
+        updateCtx.received = st.received || updateCtx.received;
+        updateCtx.total = updateCtx.total || st.received || 0;
+        updateCtx.path = st.path || updateCtx.path || '';
+        markDownloadReady(fileName);
+        return;
+      }
+      if (st.received) {
+        updateCtx.received = st.received;
+        updateCtx.total = updateCtx.total || st.total || 0;
+        renderUpdateDialog();
+      }
+    }
+  } catch (e) {}
+
+  if (native.kind === 'desktop') {
+    api.download({ url: updateCtx.url, fileName, version: updateCtx.version })
+      .then(res => {
+        if (res && res.ok) markDownloadReady(fileName);
+        else handleUpdateError(fileName, (res && res.error) || 'download failed');
+      })
+      .catch(err => handleUpdateError(fileName, String(err)));
+  } else {
+    try { api.download(updateCtx.url, fileName); } catch (e) { handleUpdateError(fileName, String(e)); }
+  }
+}
+
+function markDownloadReady(fileName) {
+  if (!updateCtx || updateCtx.fileName !== fileName) return;
+  updateCtx.status = 'done';
+  updateCtx.received = updateCtx.total || updateCtx.received;
+  if (!updateCtx.total) updateCtx.total = updateCtx.received;
+  const native = updaterNative();
+  if (native && native.api.status) {
+    normalizeStatus(native.api.status(fileName)).then(st => {
+      if (st && st.path && updateCtx && updateCtx.fileName === fileName) {
+        updateCtx.path = st.path;
+        saveUpdateState();
+      }
+    }).catch(() => {});
+  }
+  saveUpdateState();
+  // 下载完成后必须弹窗提示
+  updatePendingShow = false;
+  openUpdateDialog();
+}
+
+function handleUpdateError(fileName, msg) {
+  if (!updateCtx || updateCtx.fileName !== fileName) return;
+  updateCtx.status = 'error';
+  saveUpdateState();
+  openUpdateDialog();
+  renderUpdateDialog();
+  if (updateRetryCount < 3) {
+    updateRetryCount++;
+    setTimeout(() => {
+      if (updateCtx && updateCtx.fileName === fileName && updateCtx.status !== 'done') startNativeDownload();
+    }, 4000);
+  }
+}
+
+function restoreUpdateState() {
+  const saved = loadUpdateState();
+  if (!saved || !saved.version) return;
+  if (!isNewerVersion(saved.version, APP_VERSION)) { clearUpdateState(); return; }
+  updateCtx = {
+    version: saved.version,
+    fileName: saved.fileName || '',
+    url: saved.url || '',
+    received: saved.received || 0,
+    total: saved.total || 0,
+    status: saved.status === 'done' ? 'done' : 'downloading',
+    path: saved.path || '',
+    pageUrl: '',
+  };
+  if (!updateCtx.fileName) { updateCtx.status = 'manual'; }
+  renderUpdateDialog();
+  queueUpdateDialog();
+  if (updateCtx.fileName) startNativeDownload();
+}
+
+window.__updateProgress = function (received, total, fileName) {
+  if (!updateCtx || updateCtx.fileName !== fileName) return;
+  if (typeof received === 'number') updateCtx.received = received;
+  if (total && total > 0) updateCtx.total = total;
+  if (updateCtx.status !== 'done') updateCtx.status = 'downloading';
+  saveUpdateState();
+  renderUpdateDialog();
+};
+window.__updateReady = function (fileName) { markDownloadReady(fileName); };
+window.__updateError = function (fileName, msg) { handleUpdateError(fileName, msg); };
+
+if (window.calcUpdate && window.calcUpdate.onProgress) {
+  window.calcUpdate.onProgress((d) => {
+    if (d) window.__updateProgress(d.received, d.total, d.fileName);
+  });
+}
+
+updatePrimary.addEventListener('click', () => {
+  const native = updaterNative();
+  if (!updateCtx) return;
+  if (updateCtx.status === 'done' && native) {
+    if (native.kind === 'desktop') native.api.openFile(updateCtx.path || '');
+    else native.api.install(updateCtx.fileName);
+  } else if (updateCtx.status === 'error') {
+    updateRetryCount = 0;
+    startNativeDownload();
+  } else if (updateCtx.status === 'manual') {
+    const url = updateCtx.pageUrl || updateCtx.url;
+    if (native && native.api.openExternal) native.api.openExternal(url);
+    else window.open(url, '_blank');
+  }
+  updatePrimary.blur();
+});
+updateLater.addEventListener('click', closeUpdateDialog);
+updateOverlay.addEventListener('click', (e) => { if (e.target === updateOverlay) closeUpdateDialog(); });
+
 // ===== 键盘支持 =====
 document.addEventListener('keydown', (e) => {
+  if (!updateOverlay.hidden) {
+    if (e.key === 'Escape') { closeUpdateDialog(); e.preventDefault(); }
+    else if (e.key === 'Enter' && !updatePrimary.disabled) { updatePrimary.click(); e.preventDefault(); }
+    return;
+  }
   if (!aboutOverlay.hidden) {
     if (e.key === 'Escape' || e.key === 'Enter') { closeAbout(); e.preventDefault(); }
     return;
@@ -933,5 +1261,7 @@ document.addEventListener('keydown', (e) => {
 
 // ===== 启动 =====
 render();
-// 首次启动（每次打开应用）自动弹出关于
+// 每次启动自动弹出关于
 setTimeout(() => { openAbout(); }, 350);
+// 启动后自动检测更新（有进度记录则先恢复并继续下载）
+setTimeout(() => { restoreUpdateState(); checkForUpdate(); }, 900);
